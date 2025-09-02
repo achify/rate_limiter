@@ -7,6 +7,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/example/rate_limiter/internal/http/middleware"
 	"github.com/example/rate_limiter/internal/limiter"
 	"github.com/example/rate_limiter/internal/user"
 )
@@ -24,7 +25,18 @@ func NewUserHandler(repo user.Repository, l limiter.RateLimiter) *UserHandler {
 func (h *UserHandler) Routes() chi.Router {
 	r := chi.NewRouter()
 	r.Get("/", h.list)
-	r.Patch("/{userID}/change-password", h.changePassword)
+
+	keyFn := func(r *http.Request) (string, error) {
+		idParam := chi.URLParam(r, "userID")
+		id, err := strconv.Atoi(idParam)
+		if err != nil {
+			return "", err
+		}
+		return limiterKey(id), nil
+	}
+
+	r.With(middleware.RateLimit(h.limiter, keyFn)).
+		Patch("/{userID}/change-password", h.changePassword)
 	return r
 }
 
@@ -43,16 +55,6 @@ func (h *UserHandler) changePassword(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.Atoi(idParam)
 	if err != nil {
 		http.Error(w, "invalid user id", http.StatusBadRequest)
-		return
-	}
-
-	allowed, err := h.limiter.Allow(r.Context(), limiterKey(id))
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !allowed {
-		http.Error(w, "too many attempts", http.StatusTooManyRequests)
 		return
 	}
 
