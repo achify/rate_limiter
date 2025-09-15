@@ -2,6 +2,7 @@ package handler_test
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -23,28 +24,42 @@ func setupServer(t *testing.T) http.Handler {
 	t.Cleanup(mr.Close)
 
 	client := redis.NewClient(&redis.Options{Addr: mr.Addr()})
-	rl := limiter.NewRedis(client, 2, 24*time.Hour)
+	rl := limiter.NewRedis(client, 2, time.Second)
+
+	t.Cleanup(func() {
+		client.FlushAll(context.Background())
+		client.Close()
+	})
 
 	repo := user.NewMemoryRepository()
-	return httpserver.NewServer(repo, rl)
+	return httpserver.NewServer(repo, rl, nil)
 }
 
 func TestChangePasswordRateLimit(t *testing.T) {
+	// Arrange
 	srv := setupServer(t)
 
 	makeReq := func() *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPatch, "/v1/users/1/change-password", bytes.NewBufferString(`{"password":"x"}`))
+		reqBody := bytes.NewBufferString(`{"password":"x"}`)
+		req := httptest.NewRequest(http.MethodPatch, "/v1/users/1/change-password", reqBody)
 		rr := httptest.NewRecorder()
 		srv.ServeHTTP(rr, req)
 		return rr
 	}
 
-	for i := 0; i < 2; i++ {
-		if rr := makeReq(); rr.Code != http.StatusOK {
-			t.Fatalf("expected 200, got %d", rr.Code)
-		}
+	// Act
+	first := makeReq()
+	second := makeReq()
+	third := makeReq()
+
+	// Assert
+	if first.Code != http.StatusOK {
+		t.Fatalf("first request: expected %d, got %d", http.StatusOK, first.Code)
 	}
-	if rr := makeReq(); rr.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected 429, got %d", rr.Code)
+	if second.Code != http.StatusOK {
+		t.Fatalf("second request: expected %d, got %d", http.StatusOK, second.Code)
+	}
+	if third.Code != http.StatusTooManyRequests {
+		t.Fatalf("third request: expected %d, got %d", http.StatusTooManyRequests, third.Code)
 	}
 }

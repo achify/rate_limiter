@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/redis/go-redis/v9"
 
+	"github.com/example/rate_limiter/internal/exchange"
 	httpserver "github.com/example/rate_limiter/internal/http"
 	"github.com/example/rate_limiter/internal/limiter"
 	"github.com/example/rate_limiter/internal/user"
@@ -33,9 +34,17 @@ func main() {
 	repo := user.NewPostgresRepository(pool)
 
 	redisClient := redis.NewClient(&redis.Options{Addr: redisAddr})
+	defer redisClient.Close()
 	rl := limiter.NewRedis(redisClient, limit, ttl)
 
-	srv := httpserver.NewServer(repo, rl)
+	rateRetention := 7 * 24 * time.Hour
+	rateProvider := exchange.NewHTTPProvider(&http.Client{Timeout: 10 * time.Second})
+	rateStore := exchange.NewRedisStore(redisClient, rateRetention)
+	webhookNotifier := exchange.NewHTTPNotifier(&http.Client{Timeout: 5 * time.Second}, 5*time.Second)
+	exchangeService := exchange.NewService(rateProvider, rateStore, webhookNotifier)
+	defer exchangeService.Close()
+
+	srv := httpserver.NewServer(repo, rl, exchangeService)
 
 	addr := getenv("HTTP_ADDR", ":8080")
 	log.Printf("starting server on %s", addr)
